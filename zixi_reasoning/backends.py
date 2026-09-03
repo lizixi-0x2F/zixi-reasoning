@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,26 @@ def llm_ready() -> bool:
         return False
 
 
+def _consume_stream(resp: Any) -> str:
+    """Join content parts from an OpenAI-style stream chunk iterator.
+
+    reasoning_content is intentionally discarded: the fast/consolidate
+    workers want the final text, not hidden chain-of-thought.
+    """
+    parts: list[str] = []
+    for chunk in resp:
+        choices = getattr(chunk, "choices", None)
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        if delta is None:
+            continue
+        content = getattr(delta, "content", None)
+        if isinstance(content, str) and content:
+            parts.append(content)
+    return "".join(parts).strip()
+
+
 def complete(
     system: str,
     user: str,
@@ -97,8 +118,14 @@ def complete(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = 0.0,
     retries: int = 1,
+    stream: bool = True,
 ) -> str:
     """One completion through Hermes' own model client.
+
+    stream=True by default: for reasoning models, non-streamed calls wait for
+    ALL hidden reasoning tokens to generate before returning (measured: 36K
+    reasoning chars ≈ 80s on a 4KB event). Also forces thinking disabled so
+    the worker gets a short completion instead of a full hidden CoT.
 
     provider/model/base_url/api_key come from Hermes config unless the user
     explicitly set ZIXI_LLM_* overrides.
@@ -121,10 +148,21 @@ def complete(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                stream=False,
+                stream=stream,
+                timeout=180,
+                # DeepSeek's provider profile translates reasoning_config into
+                # extra_body.thinking.type=disabled — and the profile's output
+                # WINS the merge (a hand-set extra_body.thinking gets
+                # overwritten). This is the only lever that actually kills the
+                # hidden CoT on aux calls; measured 36K reasoning chars → 80s
+                # on a 4KB event with thinking on.
+                reasoning_config={"enabled": False, "effort": "none"},
             )
             resp = call_llm(**kwargs)  # type: ignore[arg-type]
-            text = extract_content_or_reasoning(resp).strip()
+            if stream:
+                text = _consume_stream(resp)
+            else:
+                text = extract_content_or_reasoning(resp).strip()
             if text:
                 return text
             raise RuntimeError("Hermes LLM returned empty content")
