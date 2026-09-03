@@ -67,12 +67,14 @@ def _main_route() -> tuple[str | None, str | None]:
     mdl = over.get("model")
     if not prov or not mdl:
         try:
-            from hermes_cli.config import cfg_get
+            from hermes_cli.config import load_config_readonly
 
+            cfg = load_config_readonly()
+            model_cfg = cfg.get("model", {}) or {}
             if not prov:
-                prov = str(cfg_get("model.provider") or "auto")
+                prov = str(model_cfg.get("provider") or "auto")
             if not mdl:
-                mdl = str(cfg_get("model.default") or "")
+                mdl = str(model_cfg.get("default") or "")
         except Exception:  # noqa: BLE001 — outside a Hermes process
             prov = prov or "auto"
     return prov, mdl or None
