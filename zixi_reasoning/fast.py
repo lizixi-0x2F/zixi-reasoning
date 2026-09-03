@@ -44,6 +44,7 @@ Remove stale states.
 Preserve unresolved goals and constraints.
 Create REFLECT only when the event changes future behavior.
 Use => only when information deserves crystallized memory.
+If the user explicitly asks you to remember something, crystallize it with =>.
 Return the complete new ACTIVE.md."""
 
 
@@ -109,6 +110,22 @@ def _rules_update(active: str, event_text: str) -> str:
 
     if not had_explicit:
         non_state.append(parser.make_tag("FACT", _flatten(event_text)))
+    else:
+        # Spec §17 class 5: an explicit "remember this" is a direct
+        # crystallization request — no heuristic gate.
+        for phrase in ("记住这个", "请记住", "记住以下", "记一下", "remember this"):
+            if phrase in event_text:
+                idx = event_text.find(phrase)
+                content = event_text[idx + len(phrase):].strip()
+                if content:
+                    non_state.append(
+                        parser.make_tag(
+                            "REFLECT",
+                            _flatten(content, 500),
+                            consolidate_targets=["Memories"],
+                        )
+                    )
+                break
 
     # Assemble: non-state lines first, STATEs last (current position sits
     # at the bottom where readers land).

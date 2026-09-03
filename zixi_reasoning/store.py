@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -85,14 +86,19 @@ def atomic_write(path: Path, content: str) -> Path:
 
 
 def enqueue_event(root: Path, text: str) -> Path:
-    """Write an event into the spool (atomic). Returns its path."""
+    """Write an event into the spool (atomic). Returns its path.
+
+    Filename carries a timestamp so humans reading queue/ see when things
+    happened; uuid suffix prevents collisions (spec §12 uses timestamps)."""
     (root / QUEUE_DIR).mkdir(parents=True, exist_ok=True)
-    return atomic_write(root / QUEUE_DIR / f"event-{uuid.uuid4().hex}.md", text)
+    ts = time.strftime("%Y%m%dT%H%M%S")
+    return atomic_write(root / QUEUE_DIR / f"event-{ts}-{uuid.uuid4().hex[:8]}.md", text)
 
 
 def enqueue_consolidation(root: Path, body: str) -> Path:
     (root / QUEUE_DIR).mkdir(parents=True, exist_ok=True)
-    return atomic_write(root / QUEUE_DIR / f"consolidate-{uuid.uuid4().hex}.md", body)
+    ts = time.strftime("%Y%m%dT%H%M%S")
+    return atomic_write(root / QUEUE_DIR / f"consolidate-{ts}-{uuid.uuid4().hex[:8]}.md", body)
 
 
 def queue_paths(root: Path) -> list[Path]:

@@ -68,20 +68,26 @@ def process_event_file(root: Path, path: Path) -> None:
     store.atomic_write(root / store.ACTIVE_FILENAME, new_active)
     store.git_commit(root, f"active: {path.stem}")
 
+    # Crash-safety gap (spec §39): spill crystallization candidates into the
+    # spool BEFORE running them, so a crash between the ACTIVE write and the
+    # consolidation loses nothing. The spill is then processed in this same
+    # loop cycle (queue_paths re-scans after we return).
     for candidate, targets in _consolidations_in(new_active, old_active):
         for target in targets:
-            action, node = consolidate.consolidate(root, target, candidate)
-            if action not in ("drop", "noop"):
-                store.git_commit(root, f"consolidate: {store.memory_path(root, node).name}")
-                logger.info("consolidated -> %s (%s)", node, action)
+            store.enqueue_consolidation(
+                root,
+                f"[TARGET] {target}\n\n{parser.make_tag('REFLECT', candidate)}",
+            )
     path.unlink(missing_ok=True)
+    # Best effort: process the spills we just created (still one writer).
+    for spill in store.queue_paths(root):
+        if spill.name.startswith("consolidate-"):
+            _process_consolidation(root, spill)
 
 
-def process_consolidation_file(root: Path, path: Path) -> None:
+def _process_consolidation(root: Path, path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     elements = parser.parse_text(text)
-    # Expected shape: first line defines the target, e.g.:
-    #   [TARGET] Zixi.Reasoning
     target = None
     for el in elements:
         if el.kind is None and el.raw.startswith("[TARGET]"):
@@ -93,7 +99,6 @@ def process_consolidation_file(root: Path, path: Path) -> None:
     if target is None:
         logger.warning("consolidation file %s has no target; leaving it", path.name)
         return
-    # Candidate = REFLECT lines in the file body.
     for el in elements:
         if el.kind == "REFLECT":
             action, node = consolidate.consolidate(root, target, el.text, el.links)
@@ -101,6 +106,10 @@ def process_consolidation_file(root: Path, path: Path) -> None:
                 store.git_commit(root, f"consolidate: {store.memory_path(root, node).name}")
                 logger.info("consolidated %s -> %s (%s)", path.name, node, action)
     path.unlink(missing_ok=True)
+
+
+def process_consolidation_file(root: Path, path: Path) -> None:
+    _process_consolidation(root, path)
 
 
 def process_queue(root: Path) -> int:

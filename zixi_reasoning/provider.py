@@ -23,6 +23,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -132,6 +135,42 @@ class ZixiMemoryProvider(MemoryProvider):  # type: ignore[misc]
         # Also make the provider's own process honor rules-vs-llm backend env.
         _ = backend_mode()
         logger.info("zixi memory initialized at %s", self._root)
+        self._spawn_daemon()
+
+    def _spawn_daemon(self) -> None:
+        """Ensure zixi-memoryd is running (spec §11/§23: initialize the
+        companion). Detached: Hermes exiting does not kill the daemon; it
+        drains leftover spool jobs and keeps serving."""
+        if self._root is None:
+            return
+        pidfile = self._root / "memoryd.pid"
+        if pidfile.exists():
+            try:
+                pid = int(pidfile.read_text(encoding="utf-8").strip())
+                os.kill(pid, 0)
+                return  # companion already alive
+            except (ValueError, ProcessLookupError):
+                pidfile.unlink(missing_ok=True)
+        exe = Path(sys.executable).parent / "zixi-memoryd"
+        if not exe.exists():
+            # sys.executable may be an alias/symlink chain (venv -> system);
+            # the script lives next to the venv bin entry, not the resolved one.
+            exe = shutil.which("zixi-memoryd")
+        if exe is None:
+            logger.warning("zixi-memoryd not found; memory events will queue until it runs")
+            return
+        try:
+            self._root.mkdir(parents=True, exist_ok=True)
+            with open(self._root / "memoryd.log", "a", encoding="utf-8") as log:
+                subprocess.Popen(
+                    [str(exe), "--root", str(self._root)],
+                    stdout=log,
+                    stderr=log,
+                    start_new_session=True,
+                )
+            logger.info("zixi-memoryd launched")
+        except OSError as exc:
+            logger.warning("failed to launch zixi-memoryd: %s", exc)
 
     def system_prompt_block(self) -> str:
         return _SYSTEM_PROMPT_BLOCK

@@ -5,9 +5,10 @@ empty `content` with the actual answer in `reasoning_content`; the SDK's
 `content=None` path then crashes. We stay on raw JSON and fall back.
 
 Config (env vars only — bring your own model, no config files):
-    ZIXI_BACKEND=rules|llm           default: rules (deterministic, no LLM)
+    ZIXI_BACKEND=rules|llm           default: llm (falls back to rules if no key)
     ZIXI_LLM_BASE_URL               default: api.deepseek.com/v1
-    ZIXI_LLM_API_KEY                default: $DEEPSEEK_API_KEY
+    ZIXI_LLM_API_KEY                default: $DEEPSEEK_API_KEY (Hermes' own key —
+                                    see llm_config: we also read $HERMES_HOME/.env)
     ZIXI_LLM_MODEL                  default: deepseek-v4-pro
 """
 
@@ -16,8 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
+from pathlib import Path
 
 import httpx
 
@@ -27,15 +30,40 @@ DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_MAX_TOKENS = 8192
 
+_ENV_LINE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def _read_hermes_env() -> dict[str, str]:
+    """Best-effort read of $HERMES_HOME/.env so the daemon can share the
+    Hermes key in standalone runs (systemd, tmux, no .bashrc)."""
+    home = os.environ.get("HERMES_HOME")
+    if not home:
+        home = str(Path("~/.hermes").expanduser())
+    env_path = Path(home) / ".env"
+    out: dict[str, str] = {}
+    try:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            m = _ENV_LINE_RE.match(line.strip())
+            if not m:
+                continue
+            value = m.group(2).strip().strip('"').strip("'")
+            out[m.group(1)] = value
+    except OSError:
+        pass
+    return out
+
 
 def backend_mode() -> str:
-    return os.environ.get("ZIXI_BACKEND", "rules").strip().lower()
+    mode = os.environ.get("ZIXI_BACKEND", "llm").strip().lower()
+    return mode if mode in ("rules", "llm") else "llm"
 
 
 def llm_config() -> tuple[str, str, str]:
-    """Return (base_url, api_key, model) honoring env + DEEPSEEK_API_KEY fallback."""
+    """Return (base_url, api_key, model) honoring env + Hermes' own key."""
     base = os.environ.get("ZIXI_LLM_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    key = os.environ.get("ZIXI_LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY") or ""
+    key = os.environ.get("ZIXI_LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+    if not key:
+        key = _read_hermes_env().get("DEEPSEEK_API_KEY", "")
     model = os.environ.get("ZIXI_LLM_MODEL", DEFAULT_MODEL)
     return base, key, model
 

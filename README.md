@@ -47,25 +47,29 @@ memory:
   provider: zixi
 ```
 
-Then run the daemon (suggested: `systemd --user`, `nohup`, or tmux):
+That's it. On the next Hermes start, the provider's `initialize()` spawns
+`zixi-memoryd` as a detached companion (spec §11/§23); Hermes exiting does not
+kill it — it drains leftover spool jobs and keeps serving. You can also run it
+manually:
 
 ```bash
-zixi-memoryd --backend rules    # deterministic; no LLM needed
-zixi-memoryd --backend llm      # reflection via LLM (env: ZIXI_LLM_*)
+zixi-memoryd            # default: llm backend, shares Hermes' DEEPSEEK_API_KEY
+zixi-memoryd --backend rules     # deterministic; no LLM needed
 ```
 
 ## Backends
 
 | env var | default | meaning |
 | --- | --- | --- |
-| `ZIXI_BACKEND` | `rules` | `rules` (deterministic) or `llm` |
+| `ZIXI_BACKEND` | `llm` | `rules` (deterministic) or `llm` |
 | `ZIXI_LLM_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible |
-| `ZIXI_LLM_API_KEY` | `$DEEPSEEK_API_KEY` | API key |
+| `ZIXI_LLM_API_KEY` | `$DEEPSEEK_API_KEY` | **The same key Hermes uses.** If unset, we read `$HERMES_HOME/.env` — one key, one wallet. |
 | `ZIXI_LLM_MODEL` | `deepseek-v4-pro` | model id |
 
 `rules` is fully functional: it absorbs explicit primitives, collapses
 same-subject STATEs, dedups consolidations. `llm` adds summarization, stale-state
-removal, and true revision (ADD/MERGE/REVISE/LINK/DROP).
+removal, and true revision (ADD/MERGE/REVISE/LINK/DROP). Without a key, llm mode
+logs a warning and falls back to rules — memory is never silently broken.
 
 ## CLI
 
