@@ -141,8 +141,12 @@ def git_commit(root: Path, message: str) -> str | None:
         return None
     try:
         subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
-        res = subprocess.run(
+        subprocess.run(
             ["git", "commit", "-m", message, "--quiet"],
+            cwd=root, check=True, capture_output=True, text=True,
+        )
+        res = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
             cwd=root, check=True, capture_output=True, text=True,
         )
         return res.stdout.strip()

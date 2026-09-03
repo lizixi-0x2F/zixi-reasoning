@@ -55,13 +55,13 @@ def _duplicated(candidate: str, existing_text: str) -> bool:
     return False
 
 
-def _rules_consolidate(target_path, candidate_text: str, links: list[str]) -> tuple[str, str]:
+def _rules_consolidate(target: str, target_path, candidate_text: str, links: list[str]) -> tuple[str, str]:
     """Returns (new_file_text, action)."""
     if not candidate_text.strip():
         return ("", "noop")
     if not target_path.exists():
         body = parser.make_tag("REFLECT", candidate_text, links)
-        return (default_title(target_path.stem) + "\n\n" + body + "\n", "add")
+        return (default_title(target) + "\n\n" + body + "\n", "add")
     existing = target_path.read_text(encoding="utf-8")
     if _duplicated(candidate_text, existing):
         return (existing, "drop")
@@ -110,7 +110,7 @@ def consolidate(
         linked_text = _one_hop_context(root, target, links)
         new_text, action = _llm_consolidate(target_path, candidate_text, links, linked_text)
     else:
-        new_text, action = _rules_consolidate(target_path, candidate_text, links)
+        new_text, action = _rules_consolidate(target, target_path, candidate_text, links)
 
     if action not in ("drop", "noop") and new_text:
         store.atomic_write(target_path, new_text)
