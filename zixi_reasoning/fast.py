@@ -162,7 +162,7 @@ def process_event(active: str, event_text: str) -> str:
     """Return the NEW complete ACTIVE.md for this event."""
     if backends.backend_mode() == "llm":
         if not backends.llm_ready():
-            logger.warning("ZIXI_BACKEND=llm but no key; falling back to rules")
+            logger.warning("ZIXI_BACKEND=llm but Hermes model client unavailable; falling back to rules")
             return _rules_update(active, event_text)
         return _llm_update(active, event_text)
     return _rules_update(active, event_text)

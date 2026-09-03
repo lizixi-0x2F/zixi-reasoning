@@ -132,15 +132,18 @@ The past changes the future. That is memory.
                 (ADD / MERGE / REVISE / LINK / DROP). Full worker and
                 consolidator prompts are the spec-defined ones.
 
-    The LLM key is Hermes' own. Resolution order:
+    In llm mode Zixi does NOT hold its own API key and does NOT call any
+    endpoint itself. It calls Hermes' own model client
+    (agent.auxiliary_client.call_llm): the provider, model, base_url and key
+    are Hermes' -- the same client, same model, same wallet as the agent.
 
-        ZIXI_LLM_API_KEY  ->  $DEEPSEEK_API_KEY  ->  $HERMES_HOME/.env
+    Optional explicit overrides (as-if-Hermes-were-configured-with-these):
 
-    One key, one wallet. Without a key, llm mode logs a warning and falls
-    back to rules -- memory is never silently broken.
+        ZIXI_LLM_PROVIDER   ZIXI_LLM_MODEL   ZIXI_LLM_BASE_URL   ZIXI_LLM_API_KEY
 
-        ZIXI_LLM_BASE_URL   default https://api.deepseek.com/v1
-        ZIXI_LLM_MODEL      default deepseek-v4-pro
+    Without the Hermes client available (standalone runs outside the
+    environment), llm mode logs a warning and falls back to rules --
+    memory is never silently broken.
 
 7. CLI
 

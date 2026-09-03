@@ -15,4 +15,4 @@ The model does not change. The past changes the future.
     M_{t+1} = C(M_t, Reflect(E_t, S_t))
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

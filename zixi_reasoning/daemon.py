@@ -165,6 +165,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     if args["backend"]:
         os.environ["ZIXI_BACKEND"] = args["backend"]
+    # Make Hermes' model client importable from this standalone process so
+    # the LLM backend reuses Hermes' own configuration (spec: one client).
+    from .hermes_env import ensure_hermes_path
+
+    src = ensure_hermes_path()
+    if src:
+        logger.info("using Hermes model client at %s", src)
     root = Path(args["root"] or "").expanduser() if args["root"] else store.default_root()
     if args["once"]:
         store.ensure_layout(root)
