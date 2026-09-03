@@ -54,6 +54,30 @@ def _overrides() -> dict[str, str | None]:
     return out
 
 
+def _main_route() -> tuple[str | None, str | None]:
+    """Resolve (provider, model) from Hermes' main config, falling back to
+    env overrides. Used to pin zixi's auxiliary call to the MAIN model route:
+    a pinned provider exits the 'auto' branch in Hermes' aux fallback logic,
+    which is where the built-in discovery chain (openrouter -> nous ->
+    copilot -> kimi) lives. Pinned, the only fallback left is the main-agent
+    model safety net -- i.e. deepseek retrying itself, exactly what we want.
+    """
+    over = _overrides()
+    prov = over.get("provider")
+    mdl = over.get("model")
+    if not prov or not mdl:
+        try:
+            from hermes_cli.config import cfg_get
+
+            if not prov:
+                prov = str(cfg_get("model.provider") or "auto")
+            if not mdl:
+                mdl = str(cfg_get("model.default") or "")
+        except Exception:  # noqa: BLE001 — outside a Hermes process
+            prov = prov or "auto"
+    return prov, mdl or None
+
+
 def llm_ready() -> bool:
     """True when Hermes' model client can be imported (i.e. we run inside
     the Hermes environment or with Hermes' source tree on PYTHONPATH)."""
@@ -82,12 +106,16 @@ def complete(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+    provider, model = _main_route()
+    logger.info("zixi aux route: provider=%s model=%s", provider, model)
     last_exc: Exception | None = None
     for attempt in range(retries):
         try:
             kwargs: dict[str, object] = _overrides()
             kwargs.update(
                 task="zixi_memory",
+                provider=provider,
+                model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
