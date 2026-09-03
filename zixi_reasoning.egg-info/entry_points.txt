@@ -1,0 +1,6 @@
+[console_scripts]
+zixi = zixi_reasoning.cli:main
+zixi-memoryd = zixi_reasoning.daemon:main
+
+[hermes_agent.memory_providers]
+zixi = zixi_reasoning.provider:ZixiMemoryProvider
