@@ -16,6 +16,7 @@ Two backends:
 from __future__ import annotations
 
 import logging
+import re
 
 from . import backends, parser, store
 from .parser import Element
@@ -72,6 +73,178 @@ def _subject_of_state(el: Element) -> str:
     if el.links:
         return el.links[0]
     return el.text[:_STATE_SUBJECT_PREFIX]
+
+
+def fold_state_like(lines: list[str]) -> tuple[list[str], dict[tuple[str, str], str], list[tuple[str, str]]]:
+    """Fold a line list into (non_state_lines, state_blocks, state_order).
+
+    Shared by the rules worker and the patch applier: state-like lines
+    (STATE/ASSUME/LAB) collapse to one line per (kind, subject); everything
+    else is kept verbatim.
+    """
+    non_state: list[str] = []
+    state_blocks: dict[tuple[str, str], str] = {}
+    state_order: list[tuple[str, str]] = []
+    for ln in lines:
+        els = parser.parse_text(ln)
+        state_els = [e for e in els if e.kind in _STATE_LIKE]
+        if state_els:
+            for e in state_els:
+                assert e.kind is not None  # narrowed by the filter above
+                key = (e.kind, _subject_of_state(e))
+                if key not in state_blocks:
+                    state_order.append(key)
+                state_blocks[key] = parser.make_tag(e.kind, e.text, e.links)
+            continue
+        non_state.append(ln)
+    return non_state, state_blocks, state_order
+
+
+# ---------------------------------------------------------------------------
+# Thin/rich classification + patch applier (2026-09-04 digestion re-arch)
+# ---------------------------------------------------------------------------
+# The old worker paid one full LLM rewrite (30s) per event. The new pipeline:
+#   thin events   -> apply_rules_event (zero LLM, milliseconds)
+#   rich events   -> parallel LLM patch workers (only +/- keyed lines, ~1KB)
+#                    then apply_patch serially on the single writer thread.
+# apply_patch is deterministic, idempotent and order-insensitive per
+# (kind, subject): worker threads never touch ACTIVE.md directly.
+
+_THIN_OBS_CUTOFF = 80
+_PATCH_PREFIX_RE = re.compile(r"^\s*([+-])\s*(\[(?:FACT|STATE|REASONING|REFLECT|ASSUME|LAB|SKILL)\].*)$")
+_PRIMITIVE_IN_TEXT = ("[ASSUME]", "[LAB]", "[SKILL]", "[REFLECT]", "[FACT]", "[REASONING]")
+
+
+def is_thin_event(event_text: str) -> bool:
+    """True when an event carries nothing an LLM could turn into memory.
+
+    ARC heartbeats whose [OBS] is a placeholder ("I'll observe the result
+    of ACTION3.") and that carry no primitive lines are information-less:
+    their only increment is the [STEP] status line. Zero-LLM fold.
+    """
+    if any(t in event_text for t in _PRIMITIVE_IN_TEXT):
+        return False
+    obs = event_text.split("[OBS]", 1)[-1] if "[OBS]" in event_text else event_text
+    return len(obs.strip()) < _THIN_OBS_CUTOFF
+
+
+def apply_rules_event(active: str, event_text: str) -> str:
+    """Deterministic fold for events carrying explicit primitives.
+
+    No heuristic synthesis: if the event has no primitive lines, this call
+    is not made (the caller drops the event — thin events are information-
+    less, nothing is invented for them).
+    """
+    assert any(t in event_text for t in _PRIMITIVE_IN_TEXT)
+    return _rules_update(active, event_text)
+
+
+_PATCH_WORKER_PROMPT = """You maintain ACTIVE.md as a snapshot of current cognition.
+
+You are shown the CURRENT ACTIVE.md plus ONE new event. Produce the EXACT
+line-level changes this event implies. Never rewrite the file; never echo
+unchanged lines.
+
+Patch syntax — one line per change:
+  + [TAG] text      upsert (add or replace by subject)
+  - [TAG] text      remove (by subject, or identical text)
+TAG is one of FACT|STATE|REASONING|REFLECT|ASSUME|LAB|SKILL.
+[[WikiLink]] may follow the text; =>[[Node]] may follow for crystallizable
+lessons (REFLECT/SKILL only).
+
+Semantics:
+- STATE/ASSUME/LAB upsert by (tag, subject): subject = the first [[link]],
+  else the first 16 chars of the text. A new same-subject line replaces the
+  old one.
+- FACT/REASONING/REFLECT/SKILL append unless an identical line exists.
+- Do NOT paraphrase facts the event does not support. State unknowns as
+  [ASSUME]. Keep it minimal: one line per change, nothing else.
+- If nothing needs to change, output exactly: (no change)
+Output ONLY patch lines. No fences, no prose, no commentary."""
+
+
+def parse_patch(text: str) -> list[tuple[str, Element]]:
+    """Parse a patch response into [(op, element)] preserving order.
+
+    STRICT: every non-blank line must be a well-formed patch line. If any
+    line is not (prose, fences, commentary, a partial echo of ACTIVE), the
+    whole response is rejected with [] — never a heuristic partial apply.
+    """
+    ops: list[tuple[str, Element]] = []
+    for ln in text.splitlines():
+        if not ln.strip():
+            continue
+        m = _PATCH_PREFIX_RE.match(ln)
+        if not m:
+            return []
+        els = parser.parse_text(m.group(2))
+        if not els or not els[0].kind:
+            return []
+        ops.append((m.group(1), els[0]))
+    return ops
+
+
+def _same_kind_text(line: str, el: Element) -> bool:
+    for e in parser.parse_text(line):
+        if e.kind == el.kind and e.text == el.text:
+            return True
+    return False
+
+
+def _normalize_block(lines: list[str]) -> list[str]:
+    """Collapse blank-line runs to one and strip leading/trailing blanks.
+
+    Makes the rebuilt ACTIVE canonical: applying the same patch twice must
+    be a fixpoint (blank lines must not accumulate across folds).
+    """
+    out: list[str] = []
+    prev_blank = True
+    for ln in lines:
+        if not ln.strip():
+            if prev_blank:
+                continue
+            prev_blank = True
+            out.append("")
+        else:
+            prev_blank = False
+            out.append(ln)
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def apply_patch(active: str, patch_text: str) -> str:
+    """Apply keyed patch lines to ACTIVE. Deterministic, idempotent.
+
+    '-' then '+' order per key cannot clobber: removals are computed on the
+    snapshot, upserts applied after. Non-cognitive lines (headings, prose)
+    are untouched — the patch language has no affordance for them.
+    """
+    ops = parse_patch(patch_text)
+    if not ops:
+        return active
+    non_state, blocks, order = fold_state_like(active.splitlines())
+
+    for op, el in ops:
+        if op == "-":
+            if el.kind in _STATE_LIKE:
+                key = (el.kind, _subject_of_state(el))
+                blocks.pop(key, None)
+            else:
+                non_state = [ln for ln in non_state if not _same_kind_text(ln, el)]
+        else:  # '+'
+            assert el.kind is not None  # narrowed by parse_patch
+            if el.kind in _STATE_LIKE:
+                key = (el.kind, _subject_of_state(el))
+                if key not in blocks:
+                    order.append(key)
+                blocks[key] = parser.make_tag(el.kind, el.text, el.links)
+            else:
+                if not any(_same_kind_text(ln, el) for ln in non_state):
+                    non_state.append(parser.make_tag(el.kind, el.text, el.links, el.consolidate_targets))
+    body = _normalize_block(non_state)
+    out = body + ([""] if body else []) + [blocks[s] for s in order if s in blocks]
+    return "\n".join(_normalize_block(out)).rstrip() + "\n"
 
 
 def _rules_update(active: str, event_text: str) -> str:

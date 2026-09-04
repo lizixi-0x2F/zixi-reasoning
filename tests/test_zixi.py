@@ -173,6 +173,79 @@ def test_fast_skill_cumulative_not_folded():
     assert "[SKILL]" in main and "[SKILL]" not in hyp
 
 
+# ---------------------------------------------------------------------------
+# Patch applier (zero-LLM digestion core, 2026-09-04)
+# ---------------------------------------------------------------------------
+
+def test_is_thin_event_classification():
+    thin = "[EVENT] t\n[SESSION] arc-ls20\n[STEP] 20 | last action=ACTION3, levels=0/7, state=NOT_FINISHED\n[OBS] I'll observe the result of ACTION3.\n"
+    rich = "[EVENT] t\n[STEP] 80 | last action=ACTION3, levels=1/7, state=NOT_FINISHED\n[OBS] The block moved UP to rows 5-9. Level unchanged, so reaching the top isn't the win.\n[ASSUME] the goal box is the top box [[ls20]]\n"
+    assert fast.is_thin_event(thin)
+    assert not fast.is_thin_event(rich)
+
+
+def test_thin_events_dropped_not_synthesized():
+    # thin = no primitives, no substance: NOTHING is written to ACTIVE,
+    # no progress line is invented (no heuristic synthesis).
+    active = "# ACTIVE\n"
+    e1 = "[EVENT] t\n[SESSION] arc-ls20\n[STEP] 20 | last action=ACTION3, levels=0/7, state=NOT_FINISHED\n[OBS] I'll observe the result.\n"
+    e2 = "[EVENT] t\n[SESSION] arc-ls20\n[STEP] 40 | last action=ACTION1, levels=1/7, state=NOT_FINISHED\n[OBS] I'll observe the result.\n"
+    assert fast.is_thin_event(e1) and fast.is_thin_event(e2)
+    # daemon path: both consumed, ACTIVE unchanged
+    n1 = fast.apply_rules_event(active, e1) if any(t in e1 for t in fast._PRIMITIVE_IN_TEXT) else active
+    assert n1 == active  # guard: rules fold is never called for thin events
+
+
+def test_patch_upsert_same_subject_replaces():
+    active = "# ACTIVE\n\n[STATE] block at rows 25-29 [[ls20]]\n[ASSUME] the block is me [[ls20]]\n"
+    patch = "+ [STATE] block at rows 5-9 [[ls20]]\n- [ASSUME] the block is me [[ls20]]\n"
+    new = fast.apply_patch(active, patch)
+    states = [e.text for e in parser.parse_text(new) if e.kind == "STATE"]
+    assumes = [e for e in parser.parse_text(new) if e.kind == "ASSUME"]
+    assert states == ["block at rows 5-9"]
+    assert assumes == []
+
+
+def test_patch_append_and_dedup_truth_zone():
+    active = "# ACTIVE\n\n[REFLECT] verify before trusting guesses\n"
+    patch = "+ [REFLECT] verify before trusting guesses\n+ [SKILL] watch which entity moves [[ls20]]\n"
+    new = fast.apply_patch(active, patch)
+    reflects = [e.text for e in parser.parse_text(new) if e.kind == "REFLECT"]
+    skills = [e.text for e in parser.parse_text(new) if e.kind == "SKILL"]
+    assert reflects == ["verify before trusting guesses"]  # dedup, not doubled
+    assert skills == ["watch which entity moves"]
+
+
+def test_patch_idempotent_and_prose_untouched():
+    active = "# ACTIVE\n\nSome prose that must survive.\n\n[STATE] at A [[ls20]]\n"
+    patch = "+ [STATE] at B [[ls20]]\n"
+    once = fast.apply_patch(active, patch)
+    twice = fast.apply_patch(once, patch)
+    assert once == twice
+    assert "Some prose that must survive." in once
+
+
+def test_patch_malformed_returns_active():
+    # a model that ignored the protocol (prose, fences) must be a no-op here
+    # and let the caller fall back to rules
+    active = "# ACTIVE\n\n[STATE] at A [[ls20]]\n"
+    assert fast.apply_patch(active, "```\n+ [STATE] at B [[ls20]]\n```\nsome commentary") == active
+
+
+def test_daemon_batch_mixed_thin_and_rich(tmp_path):
+    store.ensure_layout(tmp_path)
+    store.git_init_repo(tmp_path)
+    store.enqueue_event(tmp_path, "[EVENT] t\n[SESSION] arc-ls20\n[STEP] 12 | last action=ACTION1, levels=0/7, state=NOT_FINISHED\n[OBS] I'll observe.\n")
+    store.enqueue_event(tmp_path, "[EVENT] t\n[SESSION] arc-ls20\n[STEP] 30 | last action=ACTION2, levels=1/7, state=NOT_FINISHED\n[OBS] The block entered the top box via the shaft. This is a 6-frame animation.\n[REFLECT] goal box entry triggers the level =>[[arc-ls20]]\n")
+    n = process_queue(tmp_path)
+    assert n == 2
+    active = store.read_active(tmp_path)
+    # rich event folded; thin event dropped, no progress line invented
+    assert "goal box entry triggers the level" in active
+    assert "step 30" not in active and "levels 1/7" not in active
+    assert store.queue_paths(tmp_path) == []  # both consumed
+
+
 def test_daemon_skill_crystallizes(tmp_path):
     store.ensure_layout(tmp_path)
     store.git_init_repo(tmp_path)

@@ -21,9 +21,10 @@ import os
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from . import consolidate, fast, parser, store
+from . import backends, consolidate, fast, parser, store
 
 logger = logging.getLogger("zixi.memoryd")
 
@@ -59,6 +60,126 @@ def _consolidations_in(active: str, old_active: str) -> list[tuple[str, str, lis
             continue
         jobs.append((el.kind, el.text, el.consolidate_targets))
     return jobs
+
+
+def _patch_one_event(active_snapshot: str, event_text: str) -> str | None:
+    """Worker: produce a keyed patch (or None on failure -> rules fallback).
+
+    Thread-safety contract: this runs on a pool thread and only CALLS the
+    LLM; it never touches files or the active snapshot (it reads). The
+    single writer thread applies the returned patch text with
+    fast.apply_patch — keyed by (kind, subject), so parallel patch
+    generation cannot race.
+    """
+    try:
+        from .backends import complete
+
+        user = (
+            "## Current ACTIVE.md\n\n"
+            f"{active_snapshot}\n\n"
+            "## New event\n\n"
+            f"{event_text}\n\n"
+            "Return the patch lines only."
+        )
+        patch = complete(fast._PATCH_WORKER_PROMPT, user, max_tokens=2048)
+        if not patch:
+            return None
+        trimmed = patch.strip()
+        if trimmed in ("(no change)", "no change"):
+            return ""  # valid no-op, not a failure
+        if not fast.parse_patch(trimmed):
+            return None
+        return trimmed
+    except Exception as exc:  # noqa: BLE001 — worker must never kill the drain
+        logger.warning("patch worker failed (%s); event falls back to rules", exc)
+        return None
+
+
+def process_queue_batch(root: Path, max_workers: int = 2) -> int:
+    """Digest the WHOLE queue in one batch.
+
+    Thin events (no primitive lines, no substantive observation) are
+    DROPPED — they carry no cognitive payload and no heuristic is invented
+    for them. Rich events go to parallel patch workers; a failed or
+    malformed patch response DROPS the event (logged), it is never
+    rule-synthesized. One atomic ACTIVE rewrite + one commit per batch.
+
+    Returns number of event files consumed (incl. dropped).
+    """
+    paths = store.queue_paths(root)
+    if not paths:
+        return 0
+    # Queue may hold consolidate-* spills without any pending event.
+    if not any(p.name.startswith("event-") for p in paths):
+        for spill in [p for p in paths if p.name.startswith("consolidate-")]:
+            _process_consolidation(root, spill)
+        return 0
+
+    active = store.read_active(root)
+    done: list[Path] = []
+    llm_mode = backends.backend_mode() == "llm" and backends.llm_ready()
+
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue  # unreadable job stays for the next cycle
+        if fast.is_thin_event(text):
+            # No primitives, no substance: drop. Nothing to fold, nothing invented.
+            done.append(path)
+            continue
+        if not llm_mode:
+            active = fast.apply_rules_event(active, text)
+            done.append(path)
+            continue
+        # rich + llm: remember the event text; patches applied below after
+        # parallel generation, in queue order.
+        path.text = text  # type: ignore[attr-defined]  # per-batch stub
+        done.append(path)
+
+    # Parallel patch generation for rich events (all based on the same
+    # pre-batch snapshot; apply_patch is keyed, so per-subject ordering is
+    # preserved by apply order).
+    rich = [p for p in paths if getattr(p, "text", None) is not None]
+    if rich:
+        rich_events = [(p, p.text) for p in rich]  # type: ignore[attr-defined]
+        patches: dict[Path, str | None] = {}
+        with ThreadPoolExecutor(max_workers=max(1, max_workers)) as ex:
+            future_map = {ex.submit(_patch_one_event, active, t): (p, t) for p, t in rich_events}
+            for fut in as_completed(future_map):
+                p, _t = future_map[fut]
+                patches[p] = fut.result()  # None on failure
+        for p, t in rich_events:
+            patch = patches.get(p)
+            if patch is None:
+                logger.warning("patch worker returned no patch for %s; event dropped", p.name)
+                continue
+            try:
+                active = fast.apply_patch(active, patch)  # "" -> parse_patch [] -> no-op
+            except Exception as exc:  # noqa: BLE001 — malformed patch: drop
+                logger.warning("apply_patch failed for %s (%s); event dropped", p.name, exc)
+
+    old_was = store.read_active(root)
+    if active != old_was:
+        store.atomic_write(root / store.ACTIVE_FILENAME, active)
+    store.git_commit(root, f"active: batch {len(done)} event(s)")
+
+    # Crash-safety spill: crystallize => targets born in this batch.
+    for kind, candidate, targets in _consolidations_in(active, old_was):
+        for target in targets:
+            store.enqueue_consolidation(
+                root,
+                f"[TARGET] {target}\n\n{parser.make_tag(kind, candidate)}",
+            )
+
+    for path in done:
+        path.unlink(missing_ok=True)
+
+    # Best effort: process spills we just created (still one writer).
+    for spill in store.queue_paths(root):
+        if spill.name.startswith("consolidate-"):
+            _process_consolidation(root, spill)
+    return len(done)
 
 
 def process_event_file(root: Path, path: Path) -> None:
@@ -113,20 +234,13 @@ def process_consolidation_file(root: Path, path: Path) -> None:
 
 
 def process_queue(root: Path) -> int:
-    """Process everything currently in the queue. Returns job count handled."""
-    handled = 0
-    for path in store.queue_paths(root):
-        try:
-            if path.name.startswith("event-"):
-                process_event_file(root, path)
-            elif path.name.startswith("consolidate-"):
-                process_consolidation_file(root, path)
-            else:
-                continue
-            handled += 1
-        except Exception as exc:  # noqa: BLE001 — job stays, daemon survives
-            logger.error("job failed; will retry next cycle: %s (%s)", path.name, exc)
-    return handled
+    """Digest the queue in one batch: thin zero-LLM rule fold + parallel
+    patch generation for rich events, single-writer serial apply.
+
+    Returns job count handled (unreadable jobs stay for the next cycle).
+    """
+    workers = max(1, int(os.environ.get("ZIXI_PATCH_WORKERS", "2")))
+    return process_queue_batch(root, max_workers=workers)
 
 
 def run_forever(root: Path, poll: float = 1.0) -> None:
