@@ -48,16 +48,16 @@ def _clear_pidfile(root: Path) -> None:
     (root / PIDFILE).unlink(missing_ok=True)
 
 
-def _consolidations_in(active: str, old_active: str) -> list[tuple[str, list[str]]]:
-    """Collect (candidate_text, targets) from new reflection lines marked =>."""
-    jobs: list[tuple[str, list[str]]] = []
+def _consolidations_in(active: str, old_active: str) -> list[tuple[str, str, list[str]]]:
+    """Collect (kind, candidate_text, targets) from new REFLECT/SKILL lines marked =>."""
+    jobs: list[tuple[str, str, list[str]]] = []
     old_set = set(old_active.splitlines())
     for el in parser.parse_text(active):
-        if el.kind != "REFLECT" or not el.consolidate_targets:
+        if el.kind not in ("REFLECT", "SKILL") or not el.consolidate_targets:
             continue
         if el.raw in old_set:
             continue
-        jobs.append((el.text, el.consolidate_targets))
+        jobs.append((el.kind, el.text, el.consolidate_targets))
     return jobs
 
 
@@ -72,11 +72,11 @@ def process_event_file(root: Path, path: Path) -> None:
     # spool BEFORE running them, so a crash between the ACTIVE write and the
     # consolidation loses nothing. The spill is then processed in this same
     # loop cycle (queue_paths re-scans after we return).
-    for candidate, targets in _consolidations_in(new_active, old_active):
+    for kind, candidate, targets in _consolidations_in(new_active, old_active):
         for target in targets:
             store.enqueue_consolidation(
                 root,
-                f"[TARGET] {target}\n\n{parser.make_tag('REFLECT', candidate)}",
+                f"[TARGET] {target}\n\n{parser.make_tag(kind, candidate)}",
             )
     path.unlink(missing_ok=True)
     # Best effort: process the spills we just created (still one writer).
@@ -100,8 +100,8 @@ def _process_consolidation(root: Path, path: Path) -> None:
         logger.warning("consolidation file %s has no target; leaving it", path.name)
         return
     for el in elements:
-        if el.kind == "REFLECT":
-            action, node = consolidate.consolidate(root, target, el.text, el.links)
+        if el.kind in ("REFLECT", "SKILL"):
+            action, node = consolidate.consolidate(root, target, el.text, el.links, kind=el.kind)
             if action not in ("drop", "noop"):
                 store.git_commit(root, f"consolidate: {store.memory_path(root, node).name}")
                 logger.info("consolidated %s -> %s (%s)", path.name, node, action)

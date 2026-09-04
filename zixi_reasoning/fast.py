@@ -37,6 +37,7 @@ Allowed primitives:
 [REFLECT]
 [ASSUME]
 [LAB]
+[SKILL]
 [[link]]
 ->[STATE]
 =>[[memory]]
@@ -47,6 +48,10 @@ tested. Once verified, promote the verified conclusion to [FACT] or
 Never rewrite an [ASSUME] as [FACT] unless the event shows it was verified.
 [LAB] = a probe experiment ("tested X, observed Y"). Snapshot semantics,
 replace same-subject LABs with the latest.
+[SKILL] = procedural memory: a reusable verified how-to (method, protocol,
+procedure). Truth zone, cumulative — keep it while the procedure stays
+valid; fold duplicates into one line. [SKILL] lines may carry => to
+crystallize the procedure.
 
 Do not summarize the conversation.
 Do not preserve trivia.
@@ -108,7 +113,7 @@ def _rules_update(active: str, event_text: str) -> str:
             state_blocks[key] = parser.make_tag(el.kind, el.text, el.links)
             if key not in state_order:
                 state_order.append(key)
-        elif el.kind in ("FACT", "REASONING", "REFLECT"):
+        elif el.kind in ("FACT", "REASONING", "REFLECT", "SKILL"):
             had_explicit = True
             non_state.append(
                 parser.make_tag(el.kind, el.text, el.links, el.consolidate_targets)

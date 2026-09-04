@@ -57,6 +57,14 @@ def test_parser_assume_with_links():
     assert el.links == ["ls20"]
 
 
+def test_parser_skill_tag():
+    text = "[SKILL] verify player identity by watching which entity moves [[ArcAGI]]"
+    (el,) = parser.parse_text(text)
+    assert el.kind == "SKILL"
+    assert parser.is_hypothesis(el.kind) is False
+    assert el.links == ["ArcAGI"]
+
+
 def test_parser_wikilinks():
     text = "[REFLECT] Memory is state revision. [[Hermes]] [[Reflective Memory]]"
     (el,) = parser.parse_text(text)
@@ -148,6 +156,38 @@ def test_fast_lab_state_like_folding():
     new = fast.process_event(active, event)
     labs = [e.text for e in parser.parse_text(new) if e.kind == "LAB"]
     assert labs == ["pushed RIGHT -> rows 40-44"]
+
+
+def test_fast_skill_cumulative_not_folded():
+    # SKILL is truth-zone: two different skill lines both survive (no folding).
+    active = "# ACTIVE\n"
+    event = (
+        "[SKILL] read the map axes before acting [[ArcAGI]]\n"
+        "[SKILL] confirm identity by watching which entity moves [[ArcAGI]]"
+    )
+    new = fast.process_event(active, event)
+    skills = [e.text for e in parser.parse_text(new) if e.kind == "SKILL"]
+    assert len(skills) == 2
+    # and never lands in the hypothesis split
+    main, hyp = recall._split_hypotheses(new)
+    assert "[SKILL]" in main and "[SKILL]" not in hyp
+
+
+def test_daemon_skill_crystallizes(tmp_path):
+    store.ensure_layout(tmp_path)
+    store.git_init_repo(tmp_path)
+    store.enqueue_event(
+        tmp_path,
+        "[EVENT] skill test\n"
+        "[SKILL] verify identity by watching which entity moves =>[[arc-player]]",
+    )
+    n = process_queue(tmp_path)
+    assert n == 1
+    node = tmp_path / "memory" / "arc-player.md"
+    assert node.exists()
+    body = node.read_text(encoding="utf-8")
+    assert "[SKILL]" in body
+    assert "watching which entity moves" in body
 
 
 # ---------------------------------------------------------------------------

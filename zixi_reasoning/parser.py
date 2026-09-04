@@ -4,6 +4,7 @@ Recognizes exactly:
 
     [FACT] ... | [STATE] ... | [REASONING] ... | [REFLECT] ...
     [ASSUME] ... | [LAB] ...
+    [SKILL] ...
     [[WikiLink]]
     ->[STATE] ...
     =>[[Node]]
@@ -15,6 +16,8 @@ preserved. The parser never throws; unknown lines are returned as-is.
 experiments that probe them. They are intentionally kept OUT of the truth
 zone — recall groups them separately (see recall.compile_context) so a
 guessed world-model can never be injected as an established fact.
+[SKILL] is procedural memory (reusable how-to knowledge): truth zone,
+cumulative, same injection path as FACT/REFLECT.
 """
 
 from __future__ import annotations
@@ -22,15 +25,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-TAG_RE = re.compile(r"^(\s*)\[(FACT|STATE|REASONING|REFLECT|ASSUME|LAB)\]\s*(.*)$")
+TAG_RE = re.compile(r"^(\s*)\[(FACT|STATE|REASONING|REFLECT|ASSUME|LAB|SKILL)\]\s*(.*)$")
 STATE_ARROW_RE = re.compile(r"->\[STATE\]\s*([^\n]*)")
 CONSOLIDATE_RE = re.compile(r"=>\[\[([^\n\]]+)\]\]")
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+?)\]\]")
 
-TAGS = ("FACT", "STATE", "REASONING", "REFLECT", "ASSUME", "LAB")
+TAGS = ("FACT", "STATE", "REASONING", "REFLECT", "ASSUME", "LAB", "SKILL")
 # Hypothesis layer: current guesses + the experiments probing them.
 # They are state-like (snapshot semantics) but NOT truth-zone tokens.
 HYPOTHESES = ("ASSUME", "LAB")
+# SKILL is truth-zone procedural memory (reusable how-to knowledge):
+# cumulative like FACT/REFLECT, never folded, shares the injection path.
 
 
 @dataclass

@@ -35,6 +35,8 @@ The past changes the future. That is memory.
                     FACT/REFLECT when verified, removed when refuted/stale)
         [LAB]       a probe experiment: "tested X, observed Y"
                     (state-like; each subject keeps only its latest LAB)
+        [SKILL]     procedural memory: a reusable verified how-to
+                    (truth zone, cumulative; may carry => to crystallize)
 
         [[WikiLink]]    association. Files are nodes, links are edges.
                         The files ARE the graph. No second graph storage.
@@ -46,7 +48,8 @@ The past changes the future. That is memory.
     [ASSUME]/[LAB] form the hypothesis zone: they are snapshots of what the
     agent currently guesses. At recall time they are injected in a separate
     section explicitly marked UNVERIFIED — a guessed world-model never
-    masquerades as an established fact.
+    masquerades as an established fact. [SKILL] lives in the truth zone with
+    FACT/REFLECT and can crystallize into its own node.
 
     Everything else -- importance scores, confidence, memory_type, priority,
     embeddings, entity_id, UUIDs -- is forbidden. No new syntax ever:

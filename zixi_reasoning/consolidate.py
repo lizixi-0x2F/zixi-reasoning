@@ -44,39 +44,43 @@ def default_title(node: str) -> str:
     return "# " + node.strip()
 
 
-def _duplicated(candidate: str, existing_text: str) -> bool:
-    """Deterministic duplicate detector: candidate REFLECT body already present."""
+def _duplicated(candidate: str, existing_text: str, kind: str = "REFLECT") -> bool:
+    """Deterministic duplicate detector: candidate body (same kind) already present."""
     if not candidate.strip():
         return True
     # Compare on the normalized body of a single line (allow link suffix drift).
     for el in parser.parse_text(existing_text):
-        if el.kind == "REFLECT" and el.text.strip() == candidate.strip():
+        if el.kind == kind and el.text.strip() == candidate.strip():
             return True
     return False
 
 
-def _rules_consolidate(target: str, target_path, candidate_text: str, links: list[str]) -> tuple[str, str]:
+def _rules_consolidate(
+    target: str, target_path, candidate_text: str, links: list[str], kind: str = "REFLECT"
+) -> tuple[str, str]:
     """Returns (new_file_text, action)."""
     if not candidate_text.strip():
         return ("", "noop")
     if not target_path.exists():
-        body = parser.make_tag("REFLECT", candidate_text, links)
+        body = parser.make_tag(kind, candidate_text, links)
         return (default_title(target) + "\n\n" + body + "\n", "add")
     existing = target_path.read_text(encoding="utf-8")
-    if _duplicated(candidate_text, existing):
+    if _duplicated(candidate_text, existing, kind):
         return (existing, "drop")
-    # ADD: keep the file as-is, append the new reflection + its links.
-    new = existing.rstrip() + "\n\n" + parser.make_tag("REFLECT", candidate_text, links) + "\n"
+    # ADD: keep the file as-is, append the new line + its links.
+    new = existing.rstrip() + "\n\n" + parser.make_tag(kind, candidate_text, links) + "\n"
     return (new, "add")
 
 
-def _llm_consolidate(target_path, candidate_text: str, links: list[str], linked_text: str) -> tuple[str, str]:
+def _llm_consolidate(
+    target_path, candidate_text: str, links: list[str], linked_text: str, kind: str = "REFLECT"
+) -> tuple[str, str]:
     user = (
         f"## Target file: {target_path.name}\n\n"
         f"{target_path.read_text(encoding='utf-8') if target_path.exists() else '(new file)'}\n\n"
         f"## 1-hop linked files\n\n{linked_text or '(none)'}\n\n"
-        f"## Candidate reflection\n\n"
-        f"{parser.make_tag('REFLECT', candidate_text, links)}\n\n"
+        f"## Candidate ({kind})\n\n"
+        f"{parser.make_tag(kind, candidate_text, links)}\n\n"
         "Return the complete revised target Markdown file. Markdown only."
     )
     revised = backends.complete(_CONSOLIDATOR_PROMPT, user)
@@ -98,8 +102,9 @@ def consolidate(
     target: str,
     candidate_text: str,
     links: list[str] | None = None,
+    kind: str = "REFLECT",
 ) -> tuple[str, str]:
-    """Consolidate one candidate into node ``target``.
+    """Consolidate one candidate of ``kind`` (REFLECT or SKILL) into node ``target``.
 
     Returns (message, action) where action in {add, drop, revise, noop}.
     """
@@ -108,9 +113,9 @@ def consolidate(
 
     if backends.backend_mode() == "llm" and backends.llm_ready():
         linked_text = _one_hop_context(root, target, links)
-        new_text, action = _llm_consolidate(target_path, candidate_text, links, linked_text)
+        new_text, action = _llm_consolidate(target_path, candidate_text, links, linked_text, kind)
     else:
-        new_text, action = _rules_consolidate(target, target_path, candidate_text, links)
+        new_text, action = _rules_consolidate(target, target_path, candidate_text, links, kind)
 
     if action not in ("drop", "noop") and new_text:
         store.atomic_write(target_path, new_text)
