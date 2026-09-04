@@ -24,7 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import consolidate, fast, parser, store
+from . import backends, consolidate, fast, parser, store
 
 logger = logging.getLogger("zixi.memoryd")
 
@@ -123,6 +123,7 @@ def process_queue_batch(root: Path) -> int:
     active = store.read_active(root)
     done: list[Path] = []
     n_consol = 0
+    use_llm = backends.backend_mode() == "llm" and backends.llm_ready()
 
     for path in paths:
         if not path.name.startswith("event-"):
@@ -131,9 +132,12 @@ def process_queue_batch(root: Path) -> int:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue  # unreadable job stays for the next cycle
-        if fast.has_primitives(text):
+        if use_llm:
+            # Background listener: primitives fold deterministically (fast
+            # lane inside process_event), remaining prose distilled by LLM.
+            active = fast.process_event(active, text, llm=True)
+        else:
             active = fast._rules_update(active, text)
-        # else: no primitives — drop. Nothing to fold, nothing invented.
         done.append(path)
 
     old_was = store.read_active(root)

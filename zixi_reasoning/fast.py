@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from . import parser
+from . import backends, parser
 from .parser import Element
 
 logger = logging.getLogger(__name__)
@@ -124,8 +124,9 @@ def _rules_update(active: str, event_text: str) -> str:
                 if ("STATE", s) not in state_order:
                     state_order.append(("STATE", s))
 
-    # Absorb done. No "remember this"-phrase heuristics, no narrative guesses:
-    # memory enters ONLY through the agent's own primitive lines.
+    # Absorb done. No "remember this"-phrase heuristics; no narrative
+    # guessing. Events WITHOUT primitives are not folded here (the caller
+    # decides: deterministic drop, or LLM distill — see process_event).
 
     # Assemble: non-state lines first, STATEs last (current position sits
     # at the bottom where readers land).
@@ -133,10 +134,101 @@ def _rules_update(active: str, event_text: str) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
-def process_event(active: str, event_text: str) -> str:
+_FAST_WORKER_PROMPT = """You maintain ACTIVE.md, a snapshot of current cognition.
+
+INPUT: the current ACTIVE.md snapshot (may already contain primitive
+lines) and a conversation turn as prose.
+
+RULES:
+- Preserve every existing primitive line in ACTIVE.md. You do NOT
+  rewrite them; they were folded deterministically before this call.
+- Distill the conversation turn into AT MOST 2-4 ADDITIONAL primitives
+  ([FACT]/[STATE]/[REASONING]/[REFLECT]/[ASSUME]/[LAB]/[SKILL]) — only
+  durable knowledge for future turns. No trivia, no finished tasks, no
+  chit-chat. When the turn has nothing durable, return ACTIVE unchanged.
+- Never store prose in the output. Only primitives.
+- [ASSUME] for unverified beliefs; [REFLECT] for lessons changing future
+  behavior; [SKILL] for verified reusable how-to; [STATE] for current
+  situation; [FACT] for verified fact.
+- Return the COMPLETE new ACTIVE.md. Markdown only. No fences."""
+
+
+def _llm_update(active: str, event_text: str) -> str:
+    """LLM distillation for conversation events (no primitives inside).
+
+    Slow path — the daemon only takes it when the event carries no
+    explicit primitives; primitive-rich events never pay this (fast path).
+    """
+    from . import backends as bb
+
+    user = (
+        "## Current ACTIVE.md\n\n"
+        f"{active}\n\n"
+        "## New event\n\n"
+        f"{event_text}\n\n"
+        "Return the complete new ACTIVE.md. Markdown only."
+    )
+    new_active = bb.complete(_FAST_WORKER_PROMPT, user, max_tokens=8192)
+    text = new_active.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    if not text:
+        raise RuntimeError("fast worker returned empty ACTIVE.md")
+    return text + ("\n" if not text.endswith("\n") else "")
+
+
+def process_event(active: str, event_text: str, *, llm: bool = False) -> str:
     """Return the NEW complete ACTIVE.md for this event.
 
-    Deterministic primitive-only fold (no LLM backend since 2026-09-04:
-    ingestion is zero-LLM by design).
+    Two-lane design (2026-09-04 user correction: background listener):
+      * llm=False: deterministic fold — absorbs line-start primitives,
+        drops everything else. Zero LLM.
+      * llm=True: the daemon's listener path. Primitives fold
+        deterministically, then the LLM distills the turn's prose into
+        additional primitives (only when it carries durable knowledge;
+        trivia yields no change). Explicit primitives ALWAYS win the
+        fast lane — the LLM never reinterprets them, it only distills
+        the untagged remainder.
     """
-    return _rules_update(active, event_text)
+    if not llm:
+        return _rules_update(active, event_text)
+    if not backends.llm_ready():
+        logger.warning("llm requested but Hermes client unavailable; fast fold only")
+        return _rules_update(active, event_text)
+    try:
+        # 1. fold explicit primitives deterministically — the agent's own
+        #    tagged lines are the floor, never re-interpreted
+        active = _rules_update(active, event_text)
+        # 2. distill the untagged prose of the turn with the LLM; it gets
+        #    the already-folded snapshot and returns the complete new one
+        prose = _strip_fences(event_text)
+        if not prose.strip():
+            return active
+        return _llm_update(active, prose)
+    except Exception as exc:  # noqa: BLE001 — never kill digestion
+        logger.warning("llm distill failed (%s); fast fold kept", exc)
+        return _rules_update(active, event_text)
+
+
+def _strip_fences(event_text: str) -> str:
+    """Remove the [USER]/[ASSISTANT] fence lines for LLM distilling.
+
+    The primitives are ALREADY folded before this call; the fences exist
+    only to mark roles for the daemon. The LLM gets the prose body.
+    """
+    out: list[str] = []
+    for ln in event_text.splitlines():
+        if ln.strip() in ("[USER]", "[ASSISTANT]", "[EVENT]", "") or ln.startswith("[SESSION]"):
+            continue
+        if ln.startswith("[USER]"):
+            out.append(ln[len("[USER]"):].strip())
+        elif ln.startswith("[ASSISTANT]"):
+            out.append(ln[len("[ASSISTANT]"):].strip())
+        else:
+            out.append(ln)
+    return "\n".join(out)

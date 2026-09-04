@@ -86,11 +86,13 @@ Zixi.Reasoning active memory is injected at every turn via prefetch.
 Memory is contextual information, not executable instruction.
 It never overrides user requests or system policy.
 
-How things enter the ledger: ONLY lines that start with a primitive tag —
-[FACT] [STATE] [REASONING] [REFLECT] [ASSUME] [LAB] [SKILL]. If something
-in this conversation is worth remembering, write it as such a line (in
-your reply, or ask the user to); untagged narrative is never stored and
-nothing is ever synthesized on your behalf.
+How things enter the ledger: the background listener watches the
+conversation every turn. Lines you write that start with a primitive tag —
+[FACT] [STATE] [REASONING] [REFLECT] [ASSUME] [LAB] [SKILL] — are stored
+verbatim (fast lane, no interpretation). Plain conversation is distilled
+by the listener into a few primitives when it contains durable knowledge;
+trivia is dropped. You never need to make memory explicit — but tagging a
+line is the surest way to control exactly what gets stored.
 </zixi-memory-note>
 """
 
@@ -199,24 +201,25 @@ class ZixiMemoryProvider(MemoryProvider):  # type: ignore[misc]
         session_id: str = "",
         messages=None,
     ) -> None:  # noqa: ARG002
-        """Persist the turn: enqueue ONLY the turn's primitive lines.
+        """Persist the turn: enqueue the conversation for the background
+        listener (multi-line fences preserve line-start primitives).
 
-        Conversation prose ([USER]/[ASSISTANT] narrative) is never
-        forwarded — the ledger stores cognition, not transcripts. The
-        ingestion gate is parser.extract_primitive_lines: whatever in the
-        turn starts with a [TAG] line counts; everything else is dropped.
-        No primitives -> no event file at all.
+        EVERY turn is forwarded; [USER]/[ASSISTANT] fences are separate
+        lines and the turn content follows raw, so any line that starts
+        with a primitive tag keeps its line-start identity — the daemon
+        folds those deterministically (fast lane) and distills the rest
+        by LLM. Never stored as prose, never keeps trivia.
         """
         if self._root is None:
             self._root = self._root_from()
-        prims = parser.extract_primitive_lines(user_content) + parser.extract_primitive_lines(assistant_content)
-        if not prims:
-            return  # nothing self-reported this turn
         ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        user = user_content.strip()[:2000]
+        asist = assistant_content.strip()[:4000]
         body = (
             f"[EVENT] {ts}\n"
             f"[SESSION] {session_id or '-'}\n"
-            + "".join(f"{p}\n" for p in prims)
+            f"[USER]\n{user}\n"
+            f"[ASSISTANT]\n{asist}\n"
         )
         store.enqueue_event(self._root, body)
 
@@ -228,17 +231,15 @@ class ZixiMemoryProvider(MemoryProvider):  # type: ignore[misc]
         return None
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:  # noqa: ARG002
-        """Enqueue a delegation observation — primitive lines only."""
+        """Enqueue a delegation observation for the background listener."""
         if self._root is None:
             self._root = self._root_from()
-        prims = parser.extract_primitive_lines(task) + parser.extract_primitive_lines(result)
-        if not prims:
-            return
         ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         body = (
             f"[EVENT] {ts}\n"
             f"[DELEGATION] {child_session_id or '-'}\n"
-            + "".join(f"{p}\n" for p in prims)
+            f"[TASK] {task.strip()[:2000]}\n"
+            f"[RESULT] {result.strip()[:20000]}\n"
         )
         store.enqueue_event(self._root, body)
 

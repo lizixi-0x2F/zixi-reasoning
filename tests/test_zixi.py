@@ -418,30 +418,30 @@ def test_extract_primitive_lines_only_line_start():
     ]
 
 
-def test_sync_turn_primitives_only(tmp_path):
+def test_sync_turn_forwards_every_turn(tmp_path):
     from zixi_reasoning.provider import ZixiMemoryProvider
 
     p = ZixiMemoryProvider()
     p._root = tmp_path
-    # pure conversation: nothing stored
+    # pure conversation: STILL forwarded (background listener watches every turn)
     p.sync_turn("hey, what's the weather?", "It's sunny out.", session_id="s1")
-    assert store.queue_paths(tmp_path) == []
-    # turn carrying primitive lines: stored
+    assert len(store.queue_paths(tmp_path)) == 1
+    text = store.queue_paths(tmp_path)[0].read_text(encoding="utf-8")
+    assert "[USER]" in text and "It's sunny out." in text
+    # turn carrying primitive lines: forwarded with primitives inside
     p.sync_turn(
         "remember: the maps always show row axes first",
         "[REFLECT] map reading order matters [[zixi]]\n[LAB] check axes on next map [[zixi]]",
         session_id="s2",
     )
     paths = store.queue_paths(tmp_path)
-    assert len(paths) == 1
-    text = paths[0].read_text(encoding="utf-8")
-    assert "[REFLECT]" in text
-    assert "[LAB]" in text
-    assert "sunny" not in text  # conversation prose never stored
+    assert len(paths) == 2
+    assert "[REFLECT]" in paths[1].read_text(encoding="utf-8")
 
 
-def test_provider_gate_matching_daemon_gate(tmp_path):
-    # provider extracts -> daemon folds: same primitive-line gate both sides
+def test_provider_to_daemon_primitive_path(tmp_path):
+    # provider forwards a turn whose assistant message carries a primitive;
+    # daemon folds it deterministically (fast lane, no LLM in tests/rules).
     from zixi_reasoning.provider import ZixiMemoryProvider
 
     p = ZixiMemoryProvider()
