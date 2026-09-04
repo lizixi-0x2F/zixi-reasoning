@@ -37,7 +37,9 @@ DEFAULT_ROOT = Path("~/.hermes/zixi").expanduser()
 _INIT_TEMPLATE = """# ACTIVE
 
 <!-- Zixi.Reasoning active memory.
-     Primitives: [FACT] [STATE] [REASONING] [REFLECT]
+     Primitives: [FACT] [STATE] [REASONING] [REFLECT]  (truth zone)
+                 [SKILL]                                (procedural, truth zone)
+                 [ASSUME] [LAB]                         (hypothesis zone — unverified)
      Operations: [[WikiLink]]  ->[STATE]  =>[[Node]]
      This file is a snapshot of current cognition, not a journal. -->
 
