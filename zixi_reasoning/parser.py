@@ -115,6 +115,24 @@ def extract_content(text: str) -> dict[str, list[Element]]:
     return buckets
 
 
+TAG_PREFIX_RE = re.compile(r"^\s*\[(FACT|STATE|REASONING|REFLECT|ASSUME|LAB|SKILL)\]\s*(.*)$")
+
+
+def extract_primitive_lines(text: str) -> list[str]:
+    """Pull lines that START with a primitive tag.
+
+    The sole ingestion gate (2026-09-04): memory enters only through
+    explicitly tagged lines; narrative/prose at any other position is
+    never captured, never read as memory material, never synthesized.
+    Shared by the provider (sync_turn), the ARC players, and the daemon.
+    """
+    out: list[str] = []
+    for ln in text.splitlines():
+        if TAG_PREFIX_RE.match(ln):
+            out.append(ln.strip())
+    return out
+
+
 def is_hypothesis(kind: str | None) -> bool:
     """True for [ASSUME]/[LAB] — the hypothesis layer, never truth-zone tokens."""
     return kind in HYPOTHESES

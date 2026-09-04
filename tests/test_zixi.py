@@ -398,6 +398,63 @@ def test_atomic_write_no_tmp_left(tmp_path):
     assert list(tmp_path.glob(".*.tmp")) == []
 
 
+# ---------------------------------------------------------------------------
+# Provider generalization (2026-09-04, ARC removed — generic memory provider)
+# ---------------------------------------------------------------------------
+
+def test_extract_primitive_lines_only_line_start():
+    text = (
+        "some prose mentioning [ASSUME] not at line start\n"
+        "[ASSUME] the block is me [[ls20]]\n"
+        "plain narrative\n"
+        "  [LAB] push UP: enter shaft? [[ls20]]\n"
+        "[FACT] level 1 completes on box entry [[ls20]]\n"
+    )
+    lines = parser.extract_primitive_lines(text)
+    assert lines == [
+        "[ASSUME] the block is me [[ls20]]",
+        "[LAB] push UP: enter shaft? [[ls20]]",
+        "[FACT] level 1 completes on box entry [[ls20]]",
+    ]
+
+
+def test_sync_turn_primitives_only(tmp_path):
+    from zixi_reasoning.provider import ZixiMemoryProvider
+
+    p = ZixiMemoryProvider()
+    p._root = tmp_path
+    # pure conversation: nothing stored
+    p.sync_turn("hey, what's the weather?", "It's sunny out.", session_id="s1")
+    assert store.queue_paths(tmp_path) == []
+    # turn carrying primitive lines: stored
+    p.sync_turn(
+        "remember: the maps always show row axes first",
+        "[REFLECT] map reading order matters [[zixi]]\n[LAB] check axes on next map [[zixi]]",
+        session_id="s2",
+    )
+    paths = store.queue_paths(tmp_path)
+    assert len(paths) == 1
+    text = paths[0].read_text(encoding="utf-8")
+    assert "[REFLECT]" in text
+    assert "[LAB]" in text
+    assert "sunny" not in text  # conversation prose never stored
+
+
+def test_provider_gate_matching_daemon_gate(tmp_path):
+    # provider extracts -> daemon folds: same primitive-line gate both sides
+    from zixi_reasoning.provider import ZixiMemoryProvider
+
+    p = ZixiMemoryProvider()
+    p._root = tmp_path
+    store.ensure_layout(tmp_path)
+    store.git_init_repo(tmp_path)
+    p.sync_turn("", "[REFLECT] slower memory is state revision, not append =>[[zixi-reasoning]]", session_id="s")
+    n = process_queue(tmp_path)
+    assert n == 1
+    active = store.read_active(tmp_path)
+    assert "slower memory is state revision, not append" in active
+
+
 def test_parity_queues_ignored_in_git(tmp_path):
     store.ensure_layout(tmp_path)
     store.git_init_repo(tmp_path)

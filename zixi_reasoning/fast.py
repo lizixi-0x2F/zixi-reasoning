@@ -67,8 +67,12 @@ _PRIMITIVE_IN_TEXT = ("[ASSUME]", "[LAB]", "[SKILL]", "[REFLECT]", "[FACT]", "[R
 
 
 def has_primitives(event_text: str) -> bool:
-    """True when the event contains at least one explicit primitive line."""
-    return any(t in event_text for t in _PRIMITIVE_IN_TEXT)
+    """True when the event contains at least one line that STARTS with a tag.
+
+    Strict line-start check (not substring): mentioning "[ASSUME]" in
+    prose does not open the gate — only an actual primitive line does.
+    """
+    return bool(parser.extract_primitive_lines(event_text))
 
 
 def _rules_update(active: str, event_text: str) -> str:
