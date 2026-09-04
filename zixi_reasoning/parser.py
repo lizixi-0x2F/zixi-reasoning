@@ -3,12 +3,18 @@
 Recognizes exactly:
 
     [FACT] ... | [STATE] ... | [REASONING] ... | [REFLECT] ...
+    [ASSUME] ... | [LAB] ...
     [[WikiLink]]
     ->[STATE] ...
     =>[[Node]]
 
 Everything else is plain markdown (headings, blank lines, prose) and is
 preserved. The parser never throws; unknown lines are returned as-is.
+
+[ASSUME]/[LAB] are the hypothesis layer: unverified beliefs and the
+experiments that probe them. They are intentionally kept OUT of the truth
+zone — recall groups them separately (see recall.compile_context) so a
+guessed world-model can never be injected as an established fact.
 """
 
 from __future__ import annotations
@@ -16,12 +22,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-TAG_RE = re.compile(r"^(\s*)\[(FACT|STATE|REASONING|REFLECT)\]\s*(.*)$")
+TAG_RE = re.compile(r"^(\s*)\[(FACT|STATE|REASONING|REFLECT|ASSUME|LAB)\]\s*(.*)$")
 STATE_ARROW_RE = re.compile(r"->\[STATE\]\s*([^\n]*)")
 CONSOLIDATE_RE = re.compile(r"=>\[\[([^\n\]]+)\]\]")
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+?)\]\]")
 
-TAGS = ("FACT", "STATE", "REASONING", "REFLECT")
+TAGS = ("FACT", "STATE", "REASONING", "REFLECT", "ASSUME", "LAB")
+# Hypothesis layer: current guesses + the experiments probing them.
+# They are state-like (snapshot semantics) but NOT truth-zone tokens.
+HYPOTHESES = ("ASSUME", "LAB")
 
 
 @dataclass
@@ -93,12 +102,17 @@ def parse_text(text: str) -> list[Element]:
 
 
 def extract_content(text: str) -> dict[str, list[Element]]:
-    """Split a parsed text into {facts, states, reasonings, reflects}."""
+    """Split a parsed text into {facts, states, reasonings, reflects, assumes, labs}."""
     buckets: dict[str, list[Element]] = {t: [] for t in TAGS}
     for el in parse_text(text):
         if el.kind in buckets:
             buckets[el.kind].append(el)
     return buckets
+
+
+def is_hypothesis(kind: str | None) -> bool:
+    """True for [ASSUME]/[LAB] — the hypothesis layer, never truth-zone tokens."""
+    return kind in HYPOTHESES
 
 
 def collect_links(text: str) -> list[str]:

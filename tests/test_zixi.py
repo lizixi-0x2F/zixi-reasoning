@@ -27,6 +27,36 @@ def test_parser_four_tags():
     assert els[1].text == "state here"
 
 
+def test_parser_six_tags():
+    text = (
+        "[FACT] verified\n"
+        "[STATE] current\n"
+        "[REASONING] inference\n"
+        "[REFLECT] lesson\n"
+        "[ASSUME] the block is the player\n"
+        "[LAB] pushed UP x3 -> block reached rows 35-39\n"
+    )
+    els = parser.parse_text(text)
+    assert [e.kind for e in els] == ["FACT", "STATE", "REASONING", "REFLECT", "ASSUME", "LAB"]
+    assert els[4].text == "the block is the player"
+    assert els[5].text == "pushed UP x3 -> block reached rows 35-39"
+
+
+def test_parser_hypothesis_helper():
+    assert parser.is_hypothesis("ASSUME")
+    assert parser.is_hypothesis("LAB")
+    assert not parser.is_hypothesis("FACT")
+    assert not parser.is_hypothesis(None)
+
+
+def test_parser_assume_with_links():
+    text = "[ASSUME] actions move the block [[ls20]]"
+    (el,) = parser.parse_text(text)
+    assert el.kind == "ASSUME"
+    assert el.text == "actions move the block"
+    assert el.links == ["ls20"]
+
+
 def test_parser_wikilinks():
     text = "[REFLECT] Memory is state revision. [[Hermes]] [[Reflective Memory]]"
     (el,) = parser.parse_text(text)
@@ -93,6 +123,33 @@ def test_fast_explicit_reflect_kept():
     assert reflects == ["storage is not memory"]
 
 
+def test_fast_assume_same_subject_folded():
+    active = "# ACTIVE\n\n[ASSUME] actions move the block [[ls20]]\n"
+    event = "[ASSUME] actions move the player [[ls20]]"
+    new = fast.process_event(active, event)
+    assumes = [e.text for e in parser.parse_text(new) if e.kind == "ASSUME"]
+    assert assumes == ["actions move the player"]
+
+
+def test_fast_assume_keeps_hypothesis_identity():
+    # An ASSUME must never be flattened into the FACT zone by the rules worker.
+    active = "# ACTIVE\n"
+    event = "[ASSUME] the 5x5 o/b block is me [[ls20]]"
+    new = fast.process_event(active, event)
+    kinds = [e.kind for e in parser.parse_text(new) if e.kind]
+    assert kinds == ["ASSUME"]
+    facts = [e for e in parser.parse_text(new) if e.kind == "FACT"]
+    assert facts == []
+
+
+def test_fast_lab_state_like_folding():
+    active = "# ACTIVE\n\n[LAB] pushed UP -> rows 35-39 [[ls20]]\n"
+    event = "[LAB] pushed RIGHT -> rows 40-44 [[ls20]]"
+    new = fast.process_event(active, event)
+    labs = [e.text for e in parser.parse_text(new) if e.kind == "LAB"]
+    assert labs == ["pushed RIGHT -> rows 40-44"]
+
+
 # ---------------------------------------------------------------------------
 # Consolidator (rules)
 # ---------------------------------------------------------------------------
@@ -142,6 +199,51 @@ def test_compile_context_block(tmp_path):
     assert "<zixi-memory>" in ctx
     assert "Current:" in ctx
     assert "</zixi-memory>" in ctx
+
+
+def test_compile_context_hypotheses_split(tmp_path):
+    store.ensure_layout(tmp_path)
+    store.atomic_write(
+        tmp_path / store.ACTIVE_FILENAME,
+        "# ACTIVE\n"
+        "\n"
+        "[FACT] level 1 was completed [[ls20]]\n"
+        "[ASSUME] actions move the block [[ls20]]\n"
+        "[LAB] pushed UP -> rows 35-39 [[ls20]]\n"
+        "[REFLECT] verify before trusting guesses\n",
+    )
+    ctx = recall.compile_context(tmp_path)
+    # truth zone keeps FACT/REFLECT, hypothesis lines are split out
+    assert "level 1 was completed" in ctx
+    assert "verify before trusting guesses" in ctx
+    assert "Hypotheses (UNVERIFIED" in ctx
+    assert "actions move the block" in ctx
+    assert "pushed UP -> rows 35-39" in ctx
+    # the truth zone (between "Current:" and the hypotheses header) must not
+    # contain hypothesis lines
+    current = ctx.split("Current:")[1].split("Hypotheses (UNVERIFIED")[0]
+    assert "[ASSUME]" not in current
+    assert "[LAB]" not in current
+
+
+def test_recall_split_hypotheses_roundtrip():
+    active = "# ACTIVE\n\n[FACT] f\n[ASSUME] a [[X]]\n[LAB] l\n[REFLECT] r\n"
+    main, hyp = recall._split_hypotheses(active)
+    assert "[ASSUME]" in hyp and "[LAB]" in hyp
+    assert "[FACT]" in main and "[REFLECT]" in main
+    assert "[ASSUME]" not in main
+
+
+def test_consolidate_ignores_hypothesis_lines(tmp_path):
+    # Crystallization only accepts REFLECT candidates: an ASSUME line
+    # submitted as a candidate still lands as a REFLECT, but a bare
+    # ASSUME in ACTIVE never triggers nodes by itself. (Non-regression
+    # guard for the hypothesis zone.)
+    store.ensure_layout(tmp_path)
+    action, _ = consolidate.consolidate(tmp_path, "Test-Node", "a stable reflection")
+    assert action == "add"
+    p = tmp_path / "memory" / "test-node.md"
+    assert "[ASSUME]" not in p.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

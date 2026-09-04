@@ -25,12 +25,16 @@ The past changes the future. That is memory.
 -----------------------------------------------------------------------
 
 1. THE LANGUAGE
-    Four primitives, two operations, nothing else.
+    Six primitives, two operations, nothing else.
 
         [FACT]      what was observed, stated, verified
         [STATE]     what holds right now (time-sensitive)  -- the real core
         [REASONING] local inference from FACT + STATE       -- transient
         [REFLECT]   re-abstraction of experience           -- crystallization seed
+        [ASSUME]    an UNVERIFIED working belief (state-like; promoted to
+                    FACT/REFLECT when verified, removed when refuted/stale)
+        [LAB]       a probe experiment: "tested X, observed Y"
+                    (state-like; each subject keeps only its latest LAB)
 
         [[WikiLink]]    association. Files are nodes, links are edges.
                         The files ARE the graph. No second graph storage.
@@ -38,6 +42,11 @@ The past changes the future. That is memory.
         ->[STATE]       "this changes the current state"    -> cognition
 
         =>[[Node]]      "submit this to the consolidator"    -> learning
+
+    [ASSUME]/[LAB] form the hypothesis zone: they are snapshots of what the
+    agent currently guesses. At recall time they are injected in a separate
+    section explicitly marked UNVERIFIED — a guessed world-model never
+    masquerades as an established fact.
 
     Everything else -- importance scores, confidence, memory_type, priority,
     embeddings, entity_id, UUIDs -- is forbidden. No new syntax ever:

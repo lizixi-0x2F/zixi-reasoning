@@ -109,6 +109,30 @@ def recall(root, query: str, *, use_active_links: bool = True) -> list:
     return collect_links_files(root, files)
 
 
+def _split_hypotheses(active: str) -> tuple[str, str]:
+    """Split ACTIVE.md into (truth-zone text, hypothesis-zone text).
+
+    Truth zone: everything except [ASSUME]/[LAB] lines (in original order).
+    Hypothesis zone: the ASSUME/LAB lines, also in original order, lines kept
+    verbatim (their links and arrows survive).
+    """
+    main: list[str] = []
+    hyp: list[str] = []
+    for ln in active.splitlines():
+        els = parser.parse_text(ln)
+        if any(parser.is_hypothesis(e.kind) for e in els):
+            hyp.append(ln)
+        else:
+            main.append(ln)
+    return "\n".join(main), "\n".join(hyp)
+
+
+_HYPOTHESES_HEADER = (
+    "Hypotheses (UNVERIFIED — working guesses from the active ledger, "
+    "NOT established facts; verify against current evidence before trusting them):"
+)
+
+
 def compile_context(root, query: str | None = None) -> str:
     """Build the <zixi-memory> block for Hermes prefetch (spec §21).
 
@@ -116,10 +140,19 @@ def compile_context(root, query: str | None = None) -> str:
     in full, in association order. Size is controlled by curation (the
     curate step keeps nodes tight), never by silently dropping content
     at injection time.
+
+    The hypothesis layer gets its own section: [ASSUME]/[LAB] lines are
+    split out of the "Current:" block into an explicitly UNVERIFIED block,
+    so a guessed world-model can never be injected as an established fact
+    (2026-09-04: the ARC agent was "dumb" because a wrong belief got
+    crystallized and re-injected as truth).
     """
     active = store.read_active(root)
+    main, hyp = _split_hypotheses(active)
     nodes = recall(root, query) if query else []
-    parts = ["<zixi-memory>", "", "Current:", "", active]
+    parts = ["<zixi-memory>", "", "Current:", "", main]
+    if hyp:
+        parts += ["", _HYPOTHESES_HEADER, "", hyp]
     if nodes:
         parts += ["", "Relevant crystallized memory:", ""]
         for p in nodes:

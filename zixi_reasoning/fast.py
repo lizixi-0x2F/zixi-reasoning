@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _FACT_CUTOFF = 220
 _STATE_SUBJECT_PREFIX = 16
+_STATE_LIKE = ("STATE", "ASSUME", "LAB")   # snapshot semantics (state-like folding)
 
 _FAST_WORKER_PROMPT = """You maintain ACTIVE.md.
 
@@ -34,9 +35,18 @@ Allowed primitives:
 [STATE]
 [REASONING]
 [REFLECT]
+[ASSUME]
+[LAB]
 [[link]]
 ->[STATE]
 =>[[memory]]
+
+[ASSUME] = an UNVERIFIED working belief. Keep it only while it is being
+tested. Once verified, promote the verified conclusion to [FACT] or
+[REFLECT] and remove the ASSUME; once refuted or stale, remove it.
+Never rewrite an [ASSUME] as [FACT] unless the event shows it was verified.
+[LAB] = a probe experiment ("tested X, observed Y"). Snapshot semantics,
+replace same-subject LABs with the latest.
 
 Do not summarize the conversation.
 Do not preserve trivia.
@@ -68,19 +78,21 @@ def _rules_update(active: str, event_text: str) -> str:
     lines = active.splitlines()
 
     # Pass 1: fold existing file — keep non-state lines as-is; collapse
-    # STATEs so each subject holds only its latest declaration.
+    # state-like lines (STATE/ASSUME/LAB) so each (tag, subject) pair holds
+    # only its latest declaration.
     non_state: list[str] = []
-    state_blocks: dict[str, str] = {}
-    state_order: list[str] = []
+    state_blocks: dict[tuple[str, str], str] = {}
+    state_order: list[tuple[str, str]] = []
     for ln in lines:
         els = parser.parse_text(ln)
-        state_els = [e for e in els if e.kind == "STATE"]
+        state_els = [e for e in els if e.kind in _STATE_LIKE]
         if state_els:
             for e in state_els:
-                s = _subject_of_state(e)
-                if s not in state_blocks:
-                    state_order.append(s)
-                state_blocks[s] = parser.make_tag("STATE", e.text, e.links)
+                assert e.kind is not None  # narrowed by the filter above
+                key = (e.kind, _subject_of_state(e))
+                if key not in state_blocks:
+                    state_order.append(key)
+                state_blocks[key] = parser.make_tag(e.kind, e.text, e.links)
             continue
         non_state.append(ln)
 
@@ -89,12 +101,13 @@ def _rules_update(active: str, event_text: str) -> str:
     event_els = parser.parse_text(event_text)
     had_explicit = False
     for el in event_els:
-        if el.kind == "STATE":
+        if el.kind in _STATE_LIKE:
             had_explicit = True
-            s = _subject_of_state(el)
-            state_blocks[s] = parser.make_tag("STATE", el.text, el.links)
-            if s not in state_order:
-                state_order.append(s)
+            assert el.kind is not None  # narrowed by the branch above
+            key = (el.kind, _subject_of_state(el))
+            state_blocks[key] = parser.make_tag(el.kind, el.text, el.links)
+            if key not in state_order:
+                state_order.append(key)
         elif el.kind in ("FACT", "REASONING", "REFLECT"):
             had_explicit = True
             non_state.append(
@@ -104,9 +117,9 @@ def _rules_update(active: str, event_text: str) -> str:
             for st in el.state_transitions:
                 had_explicit = True
                 s = st[:_STATE_SUBJECT_PREFIX]
-                state_blocks[s] = parser.make_tag("STATE", st)
-                if s not in state_order:
-                    state_order.append(s)
+                state_blocks[("STATE", s)] = parser.make_tag("STATE", st)
+                if ("STATE", s) not in state_order:
+                    state_order.append(("STATE", s))
 
     if not had_explicit:
         non_state.append(parser.make_tag("FACT", _flatten(event_text)))
