@@ -6,6 +6,8 @@ Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
+Provides-Extra: mcp
+Requires-Dist: fastmcp>=4.0; extra == "mcp"
 
 # ZIXI.REASONING
 

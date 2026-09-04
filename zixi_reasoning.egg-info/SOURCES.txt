@@ -1,5 +1,6 @@
 README.md
 pyproject.toml
+tests/test_mcp.py
 tests/test_zixi.py
 zixi_reasoning/__init__.py
 zixi_reasoning/backends.py
@@ -8,6 +9,7 @@ zixi_reasoning/consolidate.py
 zixi_reasoning/daemon.py
 zixi_reasoning/fast.py
 zixi_reasoning/hermes_env.py
+zixi_reasoning/mcp_server.py
 zixi_reasoning/parser.py
 zixi_reasoning/provider.py
 zixi_reasoning/recall.py
