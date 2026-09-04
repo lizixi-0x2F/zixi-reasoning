@@ -1,6 +1,0 @@
-
-[dev]
-pytest>=8.0
-
-[mcp]
-fastmcp>=4.0

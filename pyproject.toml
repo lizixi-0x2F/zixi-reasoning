@@ -13,14 +13,12 @@ dependencies = []
 [project.scripts]
 zixi = "zixi_reasoning.cli:main"
 zixi-memoryd = "zixi_reasoning.daemon:main"
-zixi-mcp = "zixi_reasoning.mcp_server:main"
 
 [project.entry-points."hermes_agent.memory_providers"]
 zixi = "zixi_reasoning.provider:ZixiMemoryProvider"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-mcp = ["fastmcp>=4.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
